@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Школьное питание</title>
+<style>
+  :root{ --blue:#2563eb; --green:#16a34a; --red:#dc2626; --line:#cbd5e1; }
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  body{margin:0;font-family:system-ui,Arial,sans-serif;background:#eef2f7;color:#0f172a;
+       -webkit-tap-highlight-color:transparent}
+  header{background:#1e293b;color:#fff;padding:12px 16px;position:sticky;top:0;z-index:50}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  main{padding:12px}
+  .panel{background:#fff;border-radius:14px;padding:14px;box-shadow:0 1px 3px rgba(15,23,42,.1);margin-bottom:12px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+  label{display:flex;flex-direction:column;font-size:11px;font-weight:700;color:#475569;gap:4px;text-transform:uppercase}
+  input,select{font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:9px;background:#fff;min-width:120px}
+  button{font:inherit;cursor:pointer;border:1px solid var(--line);background:#fff;padding:10px 14px;border-radius:9px}
+  button.primary{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+  button.danger{border-color:#fca5a5;color:var(--red)}
+  button:disabled{opacity:.5}
+  .hint{font-size:12px;color:#64748b;margin:10px 0 0;line-height:1.55}
+  #tableWrap{background:#fff;border-radius:14px;box-shadow:0 1px 3px rgba(15,23,42,.1);overflow:auto;max-height:66vh}
+  table{border-collapse:separate;border-spacing:0;font-size:12px;width:100%}
+  th,td{border-right:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;padding:6px;text-align:center;white-space:nowrap}
+  th{position:sticky;top:0;z-index:3;background:#f8fafc;font-weight:700;color:#475569}
+  td.name,th.name{text-align:left;position:sticky;left:0;background:#fff;z-index:2;font-weight:600;min-width:150px}
+  th.name{z-index:4;background:#f8fafc}
+  td.total,th.total{font-weight:700;background:#f8fafc}
+  td.cell{cursor:pointer;min-width:32px;font-weight:700;color:#94a3b8}
+  th.we,td.we{background:#f1f5f9}
+  th.today,td.today{background:#fef3c7;color:#92400e}
+  td.cell.on{background:var(--green);color:#fff}
+  td.empty{color:#94a3b8;padding:20px}
+  tr.flash td{box-shadow:inset 0 0 0 2px #f59e0b}
+  #overlay{position:fixed;inset:0;background:#000;z-index:100;display:flex;flex-direction:column}
+  #video{flex:1;width:100%;object-fit:cover;min-height:0}
+  .bar{padding:12px 16px;display:flex;gap:12px;align-items:center;background:#111;color:#fff}
+  .bar span{flex:1;font-size:13px}
+  #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:80px;background:var(--green);color:#fff;
+         padding:12px 20px;border-radius:12px;font-weight:700;z-index:200;opacity:0;transition:opacity .2s;
+         pointer-events:none;max-width:90vw;text-align:center}
+  #toast.show{opacity:1}
+  #toast.err{background:var(--red)}
+</style>
+</head>
+<body>
+
+<header><h1>🍽 Школьное питание</h1></header>
+
+<main>
+  <div class="panel">
+    <div class="row">
+      <label>Класс<select id="viewCls"></select></label>
+      <button id="scanBtn" class="primary" disabled>📷 Сканировать</button>
+      <button id="importBtn">📥 Импорт</button>
+      <button id="csvBtn">📊 CSV</button>
+      <button id="resetBtn" class="danger">🗑 Сброс</button>
+      <input type="file" id="importFile" accept=".json,application/json" hidden>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label>Добавить<input id="manualName" placeholder="Фамилия Имя"></label>
+      <button id="manualAdd">➕ Отметить</button>
+    </div>
+    <p class="hint" id="todayInfo"></p>
+  </div>
+  <div id="tableWrap"></div>
+</main>
+
+<div id="overlay" hidden>
+  <video id="video" playsinline muted autoplay></video>
+  <div class="bar">
+    <span>Наведите камеру на QR-код</span>
+    <button id="closeScan" class="danger">✖ Закрыть</button>
+  </div>
+  <canvas id="cv" hidden></canvas>
+</div>
+<div id="toast"></div>
+
+<script>
+/* -------- загрузка сканера QR -------- */
+function loadScript(urls){
+  return new Promise((resolve,reject)=>{
+    let i=0;(function next(){
+      if(i>=urls.length) return reject(new Error('CDN'));
+      const u=urls[i++],s=document.createElement('script');
+      s.src=u;s.onload=()=>resolve(u);s.onerror=()=>{s.remove();next();};
+      document.head.appendChild(s);
+    })();
+  });
+}
+const SCAN_URLS=[
+  'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js',
+  'https://unpkg.com/jsqr@1.4.0/dist/jsQR.js'
+];
+
+/* -------- общие -------- */
+const CLASSES=[5,6,7,8,9,10,11];
+const LS_DB='school_meals_db_v1';
+const $=s=>document.querySelector(s);
+function load(k,d){try{const v=JSON.parse(localStorage.getItem(k));return v===null?d:v}catch(e){return d}}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function fmtDate(d){
+  const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),dd=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${dd}`;
+}
+function download(name,text,type='application/json'){
+  const b=new Blob([text],{type}),a=document.createElement('a');
+  a.href=URL.createObjectURL(b);a.download=name;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+
+let scanReady=false;
+let db=load(LS_DB,{});
+function saveDB(){localStorage.setItem(LS_DB,JSON.stringify(db))}
+
+CLASSES.forEach(c=>$('#viewCls').insertAdjacentHTML('beforeend',`<option value="${c}">${c}</option>`));
+$('#viewCls').value='5';
+$('#viewCls').onchange=()=>renderTable();
+
+let toastTimer;
+function toast(msg,isErr){
+  const t=$('#toast');t.textContent=msg;t.classList.toggle('err',!!isErr);
+  t.classList.add('show');clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>t.classList.remove('show'),2400);
+}
+let audioCtx=null;
+function beep(freq){
+  try{
+    audioCtx=audioCtx||new (window.AudioContext||window.webkitAudioContext)();
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    o.type='sine';o.frequency.value=freq;o.connect(g);g.connect(audioCtx.destination);
+    const t0=audioCtx.currentTime;
+    g.gain.setValueAtTime(0.0001,t0);
+    g.gain.exponentialRampToValueAtTime(0.25,t0+0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001,t0+0.20);
+    o.start(t0);o.stop(t0+0.22);
+  }catch(e){}
+}
+
+function renderTable(flashName){
+  const cls=$('#viewCls').value, data=db[cls]||{};
+  const names=Object.keys(data).sort((a,b)=>a.localeCompare(b,'ru'));
+  const now=new Date(), y=now.getFullYear(), m=now.getMonth();
+  const dim=new Date(y,m+1,0).getDate();
+  const todayStr=fmtDate(now);
+  const monthName=now.toLocaleDateString('ru-RU',{month:'long',year:'numeric'});
+
+  let html='<table><thead><tr><th class="name">Ученик</th>';
+  for(let d=1;d<=dim;d++){
+    const dt=new Date(y,m,d);
+    const we=dt.getDay()===0||dt.getDay()===6;
+    const isT=fmtDate(dt)===todayStr;
+    html+=`<th class="${isT?'today':''} ${we?'we':''}">${d}</th>`;
+  }
+  html+='<th class="total">Σ</th></tr></thead><tbody>';
+
+  if(!names.length){
+    html+=`<tr><td class="empty" colspan="${dim+2}">Пусто. Отсканируйте QR-код или импортируйте список.</td></tr>`;
+  }
+  names.forEach(n=>{
+    const marks=data[n]||{}; let total=0;
+    html+=`<tr class="${flashName===n?'flash':''}"><td class="name">${esc(n)}</td>`;
+    for(let d=1;d<=dim;d++){
+      const dt=new Date(y,m,d),ds=fmtDate(dt),on=!!marks[ds];
+      if(on)total++;
+      const we=dt.getDay()===0||dt.getDay()===6;
+      const isT=ds===todayStr;
+      html+=`<td class="cell ${on?'on':''} ${we?'we':''} ${isT?'today':''}" data-n="${esc(n)}" data-d="${ds}">${on?'1':''}</td>`;
+    }
+    html+=`<td class="total">${total}</td></tr>`;
+  });
+  html+='</tbody></table>';
+  $('#tableWrap').innerHTML=html;
+
+  const tc=names.filter(n=>(data[n]||{})[todayStr]).length;
+  $('#todayInfo').innerHTML=`Класс <b>${cls}</b> · ${monthName} · учеников: <b>${names.length}</b> · сегодня: <b>${tc}</b>`;
+}
+
+$('#tableWrap').addEventListener('click',e=>{
+  const td=e.target.closest('td.cell'); if(!td)return;
+  const cls=$('#viewCls').value, n=td.dataset.n, d=td.dataset.d;
+  db[cls]=db[cls]||{}; db[cls][n]=db[cls][n]||{};
+  if(db[cls][n][d]) delete db[cls][n][d]; else db[cls][n][d]=true;
+  saveDB(); renderTable();
+});
+
+$('#manualAdd').onclick=()=>{
+  const n=$('#manualName').value.trim(); if(!n)return;
+  const cls=$('#viewCls').value;
+  db[cls]=db[cls]||{}; db[cls][n]=db[cls][n]||{};
+  db[cls][n][fmtDate(new Date())]=true;
+  saveDB(); renderTable(n); $('#manualName').value='';
+  toast(`✓ ${n} — ${cls} класс`);
+};
+$('#manualName').addEventListener('keydown',e=>{if(e.key==='Enter')$('#manualAdd').click()});
+
+$('#importBtn').onclick=()=>$('#importFile').click();
+$('#importFile').onchange=e=>{
+  const f=e.target.files[0]; if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{
+    try{
+      const obj=JSON.parse(r.result); let added=0;
+      Object.keys(obj).forEach(cls=>{
+        db[cls]=db[cls]||{};
+        (obj[cls]||[]).forEach(n=>{ if(!db[cls][n]){db[cls][n]={};added++} });
+      });
+      saveDB(); renderTable(); toast(`Импортировано: ${added}`);
+    }catch(err){toast('Ошибка файла',true)}
+  };
+  r.readAsText(f); e.target.value='';
+};
+
+$('#csvBtn').onclick=()=>{
+  const cls=$('#viewCls').value, data=db[cls]||{};
+  const names=Object.keys(data).sort((a,b)=>a.localeCompare(b,'ru'));
+  const now=new Date(), y=now.getFullYear(), m=now.getMonth();
+  const dim=new Date(y,m+1,0).getDate();
+  const head=['Ученик',...Array.from({length:dim},(_,i)=>String(i+1)),'Итого'];
+  const lines=[head.join(';')];
+  names.forEach(n=>{
+    const marks=data[n]||{};
+    const cells=Array.from({length:dim},(_,i)=>marks[fmtDate(new Date(y,m,i+1))]?'1':'');
+    const total=cells.filter(x=>x).length;
+    lines.push([`"${n.replace(/"/g,'""')}"`,...cells,total].join(';'));
+  });
+  const fname=`klass_${cls}_${y}-${String(m+1).padStart(2,'0')}.csv`;
+  download(fname,'\uFEFF'+lines.join('\r\n'),'text/csv;charset=utf-8');
+};
+
+$('#resetBtn').onclick=()=>{
+  const cls=$('#viewCls').value;
+  if(!confirm(`Удалить все отметки класса ${cls}?`))return;
+  delete db[cls]; saveDB(); renderTable();
+};
+
+/* -------- камера -------- */
+const video=document.getElementById('video');
+const cv=document.getElementById('cv');
+const ctx=cv.getContext('2d',{willReadFrequently:true});
+const overlay=document.getElementById('overlay');
+let stream=null, rafId=null, lastCode='', lastAt=0;
+
+async function startScan(){
+  if(!scanReady){toast('Сканер ещё не загружен',true);return}
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    toast('Камера недоступна',true);return;
+  }
+  overlay.hidden=false;
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:{ideal:'environment'}},audio:false
+    });
+    video.srcObject=stream;
+    await video.play();
+    rafId=requestAnimationFrame(tick);
+  }catch(err){
+    overlay.hidden=true;
+    toast('Ошибка камеры: '+err.message,true);
+  }
+}
+function stopScan(){
+  if(rafId)cancelAnimationFrame(rafId); rafId=null;
+  if(stream)stream.getTracks().forEach(t=>t.stop()); stream=null;
+  video.srcObject=null; overlay.hidden=true;
+}
+function tick(){
+  if(video.readyState===video.HAVE_ENOUGH_DATA&&video.videoWidth){
+    if(cv.width!==video.videoWidth||cv.height!==video.videoHeight){
+      cv.width=video.videoWidth;cv.height=video.videoHeight;
+    }
+    ctx.drawImage(video,0,0,cv.width,cv.height);
+    const img=ctx.getImageData(0,0,cv.width,cv.height);
+    const res=window.jsQR(img.data,img.width,img.height);
+    if(res&&res.data) handleCode(res.data);
+  }
+  rafId=requestAnimationFrame(tick);
+}
+function handleCode(data){
+  const now=Date.now();
+  if(data===lastCode&&now-lastAt<2500)return;
+  lastCode=data;lastAt=now;
+  const p=String(data).split('|');
+  if(p[0]!=='MEAL'||p.length<4){toast('Не тот QR-код',true);beep(220);return}
+  const cls=p[1].trim(), name=`${p[2].trim()} ${p[3].trim()}`;
+  if(!/^(5|6|7|8|9|10|11)$/.test(cls)){toast('Неверный класс',true);return}
+  db[cls]=db[cls]||{}; db[cls][name]=db[cls][name]||{};
+  const d=fmtDate(new Date()), already=!!db[cls][name][d];
+  db[cls][name][d]=true; saveDB();
+  if($('#viewCls').value!==cls) $('#viewCls').value=cls;
+  renderTable(name);
+  toast(`${already?'Уже: ':'✓ '}${name} — ${cls} класс`,false);
+  beep(already?500:900);
+  if(navigator.vibrate)navigator.vibrate(60);
+}
+
+$('#scanBtn').onclick=startScan;
+$('#closeScan').onclick=stopScan;
+
+renderTable();
+
+loadScript(SCAN_URLS)
+  .then(()=>{scanReady=typeof window.jsQR!=='undefined'; $('#scanBtn').disabled=!scanReady;})
+  .catch(()=>toast('Не удалось загрузить сканер. Проверьте интернет.',true));
+</script>
+</body>
+</html>
